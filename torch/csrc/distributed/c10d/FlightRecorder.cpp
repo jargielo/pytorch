@@ -144,8 +144,10 @@ DebugInfoWriter& DebugInfoWriter::getWriter(int rank) {
     std::filesystem::create_directories(cacheDirPath);
     auto defaultLocation = cacheDirPath / "nccl_trace_rank_";
 
+    // For internal bc compatibility, we keep the old the ENV check.
     std::string fileNamePrefix = getCvarString(
-        {"TORCH_NCCL_DEBUG_INFO_TEMP_FILE"}, defaultLocation.c_str());
+        {"TORCH_DEBUG_INFO_TEMP_FILE", "TORCH_NCCL_DEBUG_INFO_TEMP_FILE"},
+        defaultLocation.c_str());
     // Using std::unique_ptr here to auto-delete the writer object
     // when the pointer itself is destroyed.
     std::unique_ptr<DebugInfoWriter> writerPtr(
