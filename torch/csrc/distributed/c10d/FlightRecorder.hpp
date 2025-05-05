@@ -1,8 +1,4 @@
 #pragma once
-
-// TODO: Make Fligth Recorder device agnostic
-#ifdef USE_C10D_NCCL
-
 #include <cstdio>
 #include <cstdlib>
 
@@ -10,7 +6,9 @@
 #include <mutex>
 
 #include <ATen/ATen.h>
+#ifdef USE_C10D_NCCL
 #include <ATen/cuda/CUDAEvent.h>
+#endif // USE_C10D_NCCL
 #include <c10/util/Exception.h>
 #include <c10/util/WaitCounter.h>
 #include <nlohmann/json.hpp>
@@ -90,10 +88,15 @@ class TORCH_API DebugInfoWriter {
   static std::atomic<bool> hasWriterRegistered_;
 };
 
+/* Helper used by work::getDuration() and flight recorder */
+float getDurationFromEvent(c10::Event& startEvent, c10::Event& endEvent);
+
+#ifdef USE_C10D_NCCL
 /* Helper used by work::getDuration() and nccl flight recorder */
 float getDurationFromEvent(
     at::cuda::CUDAEvent& ncclStartEvent,
     at::cuda::CUDAEvent& ncclEndEvent);
+#endif // USE_C10D_NCCL
 
 template <typename EventType>
 struct FlightRecorder {
@@ -105,8 +108,10 @@ struct FlightRecorder {
     return instance;
   }
   FlightRecorder() {
-    max_entries_ = getCvarInt({"TORCH_NCCL_TRACE_BUFFER_SIZE"}, 0);
-    capture_cpp_stack_ = getCvarBool({"TORCH_NCCL_TRACE_CPP_STACK"}, false);
+    max_entries_ = getCvarInt(
+        {"TORCH_TRACE_BUFFER_SIZE", "TORCH_NCCL_TRACE_BUFFER_SIZE"}, 0);
+    capture_cpp_stack_ = getCvarBool(
+        {"TORCH_TRACE_CPP_STACK", "TORCH_NCCL_TRACE_CPP_STACK"}, false);
     enabled_ = max_entries_ > 0;
   }
   struct Entry {
@@ -566,19 +571,13 @@ struct FlightRecorder {
     return result;
   };
 
-  std::string dump_json(
-      const std::optional<std::unordered_map<
-          std::string,
-          std::unordered_map<std::string, std::string>>>& ncclDumpMap,
-      bool includeCollectives,
-      bool onlyActive) {
-    using json = nlohmann::json;
+  using json = nlohmann::json;
+  json get_dump_json(bool includeCollectives, bool onlyActive) {
     json result;
     result[version_key_str] = version_val_str;
     result[nccl_version_key_str] = nccl_version_;
     result[pg_config_key_str] = getPgConfigJson();
     result[pg_status_key_str] = getPgStatusJson();
-
     // collective trace
     if (includeCollectives) {
       std::list<json> entries;
@@ -645,24 +644,32 @@ struct FlightRecorder {
         j[is_p2p_key_str] = e.isP2P_;
         entries.emplace_back(j);
       }
-
       if (!entries.empty()) {
         result[entries_key_str] = entries;
       }
     }
-
-    if (ncclDumpMap.has_value()) {
-      result[nccl_comm_key_str] = ncclDumpMap.value();
-    }
-
-    return result.dump();
+    return result;
   };
 
-  // dump all collectives + ncclDumpMap
-  std::string dump(
+  std::string dump_json(bool includeCollectives, bool onlyActive) {
+    return (get_dump_json(includeCollectives, onlyActive)).dump();
+  };
+
+  std::string dump_json(
       const std::optional<std::unordered_map<
           std::string,
           std::unordered_map<std::string, std::string>>>& ncclDumpMap,
+      bool includeCollectives,
+      bool onlyActive) {
+    // Adding ncclDumpMap to the json object is NCCL specific.
+    auto result = get_dump_json(includeCollectives, onlyActive);
+    if (ncclDumpMap.has_value()) {
+      result[nccl_comm_key_str] = ncclDumpMap.value();
+    }
+    return result.dump();
+  };
+
+  c10::Dict<c10::IValue, c10::IValue> get_dump(
       bool includeCollectives,
       bool includeStackTraces,
       bool onlyActive) {
@@ -679,6 +686,28 @@ struct FlightRecorder {
       result.insert(
           entries_key, getCollectiveTrace(includeStackTraces, onlyActive));
     }
+
+    return result;
+  };
+
+  // dump all collectives + ncclDumpMap
+  std::string dump(
+      bool includeCollectives,
+      bool includeStackTraces,
+      bool onlyActive) {
+    return pickle_str(
+        get_dump(includeCollectives, includeStackTraces, onlyActive));
+  };
+
+  std::string dump(
+      const std::optional<std::unordered_map<
+          std::string,
+          std::unordered_map<std::string, std::string>>>& ncclDumpMap,
+      bool includeCollectives,
+      bool includeStackTraces,
+      bool onlyActive) {
+    auto result = get_dump(includeCollectives, includeStackTraces, onlyActive);
+
     // convert ncclDumpMap into a dictionary
     auto per_comm_dict = new_dict();
     if (ncclDumpMap.has_value()) {
@@ -696,7 +725,4 @@ struct FlightRecorder {
     return pickle_str(result);
   };
 };
-
 } // namespace c10d
-
-#endif // USE_C10D_NCCL

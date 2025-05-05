@@ -1,14 +1,16 @@
-// TODO: Make Fligth Recorder device agnostic
 #ifdef USE_C10D_NCCL
-
 #include <cuda_runtime.h>
+#endif // USE_C10D_NCCL
 
 #include <torch/csrc/distributed/c10d/FlightRecorder.hpp>
+#ifdef USE_C10D_NCCL
 #include <torch/csrc/distributed/c10d/ProcessGroupNCCL.hpp>
+#endif // USE_C10D_NCCL
 #include <torch/csrc/distributed/c10d/control_plane/Handlers.hpp>
 
 namespace c10d {
 
+#ifdef USE_C10D_NCCL
 control_plane::RegisterHandler dumpHandler{
     "dump_nccl_trace_pickle",
     [](const control_plane::Request& req, control_plane::Response& res) {
@@ -101,6 +103,7 @@ control_plane::RegisterHandler jsonDumpHandler{
               processedParams[onlyActiveStr]),
           "application/json");
     }};
+#endif // USE_C10D_NCCL
 
 void DebugInfoWriter::write(const std::string& trace) {
   // Open a file for writing. The ios::binary flag is used to write data as
@@ -166,6 +169,11 @@ void DebugInfoWriter::registerWriter(std::unique_ptr<DebugInfoWriter> writer) {
 std::unique_ptr<DebugInfoWriter> DebugInfoWriter::writer_ = nullptr;
 std::atomic<bool> DebugInfoWriter::hasWriterRegistered_(false);
 
+float getDurationFromEvent(c10::Event& startEvent, c10::Event& endEvent) {
+  TORCH_CHECK(false, "getDuration not supported by c10::Event.");
+}
+
+#ifdef USE_C10D_NCCL
 float getDurationFromEvent(
     at::cuda::CUDAEvent& ncclStartEvent,
     at::cuda::CUDAEvent& ncclEndEvent) {
@@ -174,7 +182,5 @@ float getDurationFromEvent(
       "getDuration can only be called after work is succeeded.")
   return ncclStartEvent.elapsed_time(ncclEndEvent);
 }
-
-} // namespace c10d
-
 #endif // USE_C10D_NCCL
+} // namespace c10d
