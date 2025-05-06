@@ -4,6 +4,7 @@ import math
 import os
 import re
 import sysconfig
+import time
 import unittest
 import unittest.mock as mock
 from pathlib import Path
@@ -1313,6 +1314,31 @@ class TestCutlassBackend(TestCase):
             }
         ):
             _ = torch.compile(model)(B)
+
+    @unittest.skipIf(not SM90OrLater, "need sm_90")
+    @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
+    def test_filtered_ops_cache(self):
+        class TestModel(torch.nn.Module):
+            def forward(self, B):
+                A = torch.zeros_like(B)
+                for _ in range(100):
+                    A = A @ B
+                return A
+
+        M = 1024
+        B = torch.randn(M, M).cuda().half()
+        model = TestModel().cuda()
+
+        start_time = time.time()
+        with config.patch(
+            {
+                "max_autotune": True,
+                "max_autotune_gemm_backends": "CUTLASS",
+                "cuda.cutlass_max_profiling_configs": 1,
+            }
+        ):
+            _ = torch.compile(model)(B)
+        self.assertTrue(time.time() - start_time < 100)
 
 
 if __name__ == "__main__":
